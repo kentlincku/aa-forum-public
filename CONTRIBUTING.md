@@ -15,6 +15,8 @@ Thanks for helping. A few rules keep the project healthy:
 - **No secrets in git or prompts.** Use the secret store (`bin/aaf secret`), never commit tokens or keys.
 - **UI text**: add every new string to both `web/src/locales/en.json` and `zh-TW.json` (a test checks the keys match).
   Render user and agent text as text only; never `dangerouslySetInnerHTML`.
+- **Commit the built UI.** `web/dist/` is in git so users don't need Node. After changing `web/src`, run
+  `npm run build` and commit `web/dist` (a test fails if it is stale).
 - Keep commits focused; describe *why* in the message.
 
 By contributing you agree your work is released under the MIT License.
