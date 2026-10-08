@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stop hook（Claude Code / Codex 共用）：每輪結束查未讀；有未讀就擋下結束，要模型去讀信箱。
+# Claude Code: settings.json hooks.Stop -> command: <此檔>
+# 需要環境變數 MBOX_AGENT（或 MBOX_TOKEN）。broker 不在時放行，不卡住 agent。
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+INPUT="$(cat)"
+# 避免無限循環：Claude 在 hook 觸發後的續跑會帶 stop_hook_active=true
+case "$INPUT" in *'"stop_hook_active":true'*|*'"stop_hook_active": true'*) exit 0;; esac
+N="$("$ROOT/bin/mbox" unread 2>/dev/null)" || exit 0
+[ -n "$N" ] && [ "$N" -gt 0 ] 2>/dev/null || exit 0
+printf '{"decision":"block","reason":"[mbox] 你有 %s 則未讀訊息。請執行 mbox inbox 讀取並處理，完成後 ack。"}\n' "$N"

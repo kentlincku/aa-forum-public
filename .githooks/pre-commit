@@ -1,0 +1,3 @@
+#!/bin/sh
+# 公版提交前：私有字樣、核心不認得 agent、bash 3.2 全形變數（快，<1 秒）
+exec env -u PYTHONPATH -u PYTHONHOME "$(git rev-parse --show-toplevel)/.venv/bin/python" -B -m pytest -q -p no:cacheprovider tests/test_public_clean.py tests/test_shell_cjk.py tests/test_s5_agnostic.py tests/test_pc1_no_person_names.py

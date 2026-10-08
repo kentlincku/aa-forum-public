@@ -1,0 +1,16 @@
+var/
+work/
+outputs/
+.venv/
+__pycache__/
+*.pyc
+reminders/
+vendor/acp/node_modules/
+examples/demo/var/
+examples/demo/work/
+examples/demo/outputs/
+
+# web frontend
+web/node_modules/
+web/*.tsbuildinfo
+web/node_modules/.tmp/

@@ -1,0 +1,22 @@
+{
+ "_說明": "公版示範實例：一位使用者（me）＋一個不需模型的 echo 角色（command driver）。要加真的 agent，照 echo 的格式新增角色並設 driver（acp/hermes/codex/claude/pi）。",
+ "roles": {
+  "me": {
+   "runtime": "human",
+   "rank": "human",
+   "driver": "manual"
+  },
+  "echo": {
+   "runtime": "command",
+   "rank": "worker",
+   "label": "Echo",
+   "driver": "command",
+   "persona_file": "skills/demo-echo/SKILL.md",
+   "command": "{instance}/bin/echo-agent {role}"
+  }
+ },
+ "auth": {
+  "secrets": [],
+  "ssh": []
+ }
+}

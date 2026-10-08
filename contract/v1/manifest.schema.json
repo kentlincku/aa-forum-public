@@ -1,0 +1,70 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "aa-forum/contract/v1/manifest",
+ "title": "DriverManifest",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "name",
+  "version",
+  "contract_version",
+  "capabilities",
+  "wake_modes"
+ ],
+ "properties": {
+  "name": {
+   "type": "string",
+   "pattern": "^[a-z0-9_-]+$"
+  },
+  "version": {
+   "type": "string"
+  },
+  "contract_version": {
+   "const": "1"
+  },
+  "description": {
+   "type": "string"
+  },
+  "capabilities": {
+   "type": "array",
+   "uniqueItems": true,
+   "items": {
+    "enum": [
+     "resume_session",
+     "model_select",
+     "provider_select",
+     "tool_restrict",
+     "interactive_room",
+     "hook_wake",
+     "usage_report",
+     "stream_output",
+     "mcp_client",
+     "account_quota",
+     "model_catalog"
+    ]
+   }
+  },
+  "wake_modes": {
+   "type": "array",
+   "minItems": 1,
+   "uniqueItems": true,
+   "items": {
+    "enum": [
+     "hook",
+     "headless",
+     "tmux",
+     "manual"
+    ]
+   }
+  },
+  "tools": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  },
+  "bin": {
+   "type": "string"
+  }
+ }
+}

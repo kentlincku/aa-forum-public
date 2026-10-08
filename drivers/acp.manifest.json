@@ -1,0 +1,7 @@
+{
+ "name": "acp",
+ "version": "1.0.0",
+ "contract_version": "1",
+ "capabilities": ["resume_session", "model_select", "usage_report", "stream_output"],
+ "wake_modes": ["headless"]
+}

@@ -1,0 +1,11 @@
+#!/bin/sh
+# AA Forum 短指令：身分與實例由角色啟動環境提供。
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+: "${AAF_AGENT:=${MBOX_AGENT:-}}"
+if [ -z "$AAF_AGENT" ]; then
+  echo 'aaf-chat: 請設定 AAF_AGENT（或 MBOX_AGENT）為本人角色' >&2
+  exit 2
+fi
+. "$ROOT/bin/_instance_env.sh"
+exec "$ROOT/.venv/bin/python" "$ROOT/server/cli.py" \
+  --url "$AAF_CHAT_URL" --agent "$AAF_AGENT" "$@"

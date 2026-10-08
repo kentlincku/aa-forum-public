@@ -1,0 +1,366 @@
+#!/bin/bash
+# aaf 統一入口：mbox broker(:8775)、AA Forum(:8111)、dispatcher，外加監看程序 supervisor。
+#   bin/aaf up                 啟動三服務（已在跑的不重開）＋背景 supervisor（掛掉自動重開）
+#   bin/aaf down               先停 supervisor 再停服務（dispatcher → AA Forum → broker），不會被拉回
+#   bin/aaf restart [name]     重啟全部或單一服務（broker｜server｜dispatcher）
+#   bin/aaf status             服務、supervisor、角色狀態
+#   bin/aaf logs [name] [-n N] 看 log
+#   bin/aaf doctor             自我檢查（port、heartbeat、var、tokens、各 driver 可執行）
+#
+# supervisor（SPEC-simplify-deploy D7、D10）：每 5 秒檢查；服務不在就重開；同一服務 5 分鐘內重開 3 次
+# 即停止重開並告警（$VAR/alerts/queue.jsonl → dispatcher 轉送使用者與 AA Forum）。dispatcher heartbeat
+# 逾 120 秒視為卡死並重開。不設開機自啟（D2）。
+#
+# 單例判斷與停止一律依 $VAR/<name>.pid＋`ps -p` 比對 uid 與 command，不用 pgrep/pkill：
+# macOS 的 pgrep/pkill 預設排除自己的祖先，從角色 turn（dispatcher 的子孫）呼叫時會看不到／殺不到
+# dispatcher，造成重複 loop。
+# 沒有 pid 檔（例如舊版啟動的服務）時，以 `ps -U <uid> -o pid=,command=` 掃描——ps 不排除祖先。
+# 符合條件（本使用者、argv[0] 正好是 $PY、含服務參數、cwd＝$ROOT）恰好 1 個才收編並寫 pid 檔；
+# 多於 1 個時印出清單、exit 非 0，不自動收編也不停（人工處理步驟見 docs/ 的維運說明）。
+#
+# 注意：bash 3.2 會把緊接在 $var 後的全形字元吃進變數名，含中文的字串一律寫 ${var}。
+# 測試用覆寫：AAF_UP_PY（假 python）、AAF_UP_STOP_WAIT（秒）、AAF_UP_NO_HTTP=1、
+#   AAF_SUP_EVERY／AAF_SUP_WINDOW／AAF_SUP_MAX／AAF_SUP_HB_STALE（supervisor 參數）。
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"  # 公版程式根。-P：與 lsof 回報的實體路徑一致（/var → /private/var）
+unset MBOX_ROLES
+# 不需要實例或 venv 的子指令先處理
+case "${1:-}" in
+  install|init) exec "$ROOT/bin/aaf-setup" "$@" ;;
+  --version|version) echo "aaf $(cat "$ROOT/VERSION" 2>/dev/null || echo unknown)"; exit 0 ;;
+esac
+. "$ROOT/bin/_instance_env.sh"   # 實例根（AAF_HOME，相對路徑以呼叫時的目錄為準）與 .aaf.env
+cd "$ROOT" || exit 1
+VAR="$MBOX_HOME"
+export PATH="$ROOT/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+export AAF_FILES_ROOT="${AAF_FILES_ROOT:-$AAF_HOME/outputs}"
+PY="${AAF_UP_PY:-$ROOT/.venv/bin/python}"
+STOP_WAIT="${AAF_UP_STOP_WAIT:-10}"   # TERM 後最多等幾秒（每 0.2 秒檢查一次）
+KILL_WAIT=5                                  # KILL 後最多等幾秒確認退出
+mkdir -p "$VAR" "$AAF_HOME/outputs"
+
+NAMES="broker server dispatcher"
+
+mtime() {  # 檔案修改時間（epoch 秒）。GNU stat 的 -f 是「檔案系統資訊」且會印到 stdout，所以先試 GNU 寫法
+  stat -c %Y "$1" 2>/dev/null && return 0
+  stat -f %m "$1" 2>/dev/null
+}
+
+proc_home() {  # 程序環境裡的 AAF_HOME：同一份公版跑多個實例時，靠它分辨程序屬於哪個實例
+  if [ -r "/proc/$1/environ" ]; then tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n 's/^AAF_HOME=//p' | head -1
+  else ps eww -o command= -p "$1" 2>/dev/null | tr ' ' '\n' | sed -n 's/^AAF_HOME=//p' | head -1; fi
+}
+
+proc_cwd() {  # 程序的工作目錄：Linux 讀 /proc（不必裝 lsof），macOS 用 lsof
+  if [ -e "/proc/$1/cwd" ]; then readlink -f "/proc/$1/cwd" 2>/dev/null
+  else lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1; fi
+}
+
+pattern() {  # 服務 → command 中必含的參數
+  case $1 in
+    broker) echo "-m mbox.broker" ;;
+    server) echo "server/app.py" ;;
+    dispatcher) echo "-m mbox.dispatcher loop" ;;
+    *) return 1 ;;
+  esac
+}
+
+pid_matches() {  # pid name：存活、屬本使用者、argv[0] 正好是 $PY、含該服務參數、cwd 是 $ROOT
+  local line uid cmd cwd
+  line=$(ps -p "$1" -o uid=,command= 2>/dev/null) || return 1
+  uid=$(echo "$line" | awk '{print $1}')
+  cmd=$(echo "$line" | sed -E 's/^ *[0-9]+ +//; s#^[^ ]*/qemu-[A-Za-z0-9_]+ ##')   # 跨架構容器（qemu-user）會在前面多一個直譯器
+  [ "$uid" = "$(id -u)" ] || return 1
+  # argv[0] 必須正好是 $PY：排除 `bash -c "… .venv/bin/python -m mbox.broker"` 這類包裝程序
+  case "$cmd" in "$PY "*) ;; *) return 1 ;; esac
+  case "$cmd" in *" $(pattern "$2")"*) ;; *) return 1 ;; esac
+  # cwd 必須是 $ROOT：worktree／沙箱共用主 checkout 的 .venv，靠 cwd 區分 live 與沙箱
+  cwd=$(proc_cwd "$1")
+  [ "$cwd" = "$ROOT" ] || return 1
+  # 實例：程序的 AAF_HOME 必須是本實例。舊版啟動、沒帶 AAF_HOME 的程序只在「實例＝公版目錄」時收編
+  local home; home=$(proc_home "$1")
+  [ "$home" = "$AAF_HOME" ] || { [ -z "$home" ] && [ "$AAF_HOME" = "$ROOT" ]; }
+}
+
+scan_pids() {  # 無 pid 檔時：列出本使用者所有符合的程序（ps 不排除祖先；不 break）
+  local pid cmd pat
+  pat="$(pattern "$1")"
+  ps -U "$(id -u)" -o pid=,command= | while read -r pid cmd; do
+    # 先用字串粗篩（便宜），符合者才跑 pid_matches（含 lsof cwd，較貴）
+    cmd=${cmd#*/qemu-x86_64 }; cmd=${cmd#*/qemu-aarch64 }
+    case "$cmd" in "$PY "*"$pat"*) pid_matches "$pid" "$1" && echo "$pid" ;; esac
+  done
+}
+
+current_pid() {  # 服務目前的 pid（順便修正 pid 檔）；沒在跑回空；多個符合時回 2（不自動收編）
+  local name=$1 f="$VAR/$1.pid" pid found n
+  if [ -f "$f" ]; then
+    pid=$(tr -cd '0-9' < "$f")
+    if [ -n "$pid" ] && pid_matches "$pid" "$name"; then echo "$pid"; return 0; fi
+    rm -f "$f"  # 殘留：pid 已不存在，或已被別的程式重用
+  fi
+  found=$(scan_pids "$name")
+  n=$(printf '%s' "$found" | grep -c .)
+  if [ "$n" -gt 1 ]; then
+    {
+      echo "${name}：沒有 pid 檔，且找到 ${n} 個符合的程序，不自動收編也不停止。請在使用者自己的終端（不要在角色 turn 內）手動處理："
+      echo "  1. 看清楚每一個（啟動時間、父程序）："
+      echo "       ps -o pid,ppid,lstart,command -p $(echo $found | tr ' ' ',')"
+      echo "  2. 保留一個（通常是較早啟動、log 對得上的），其餘逐一停掉，確認退出（必要時 kill -9）："
+      for p in $found; do echo "       kill ${p}   # 若這個不是要保留的"; done
+      echo "  3. 剩一個後，二擇一："
+      echo "       bin/aaf status                        # 自動收編剩下那一個並寫 pid 檔"
+      echo "       echo <要保留的pid> > ${VAR}/${name}.pid   # 或手動寫入（寫錯會被當殘留刪掉重掃）"
+    } >&2
+    return 2
+  fi
+  if [ "$n" = 1 ]; then echo "$found" > "$f"; echo "$found"; fi
+  return 0
+}
+
+start_one() {
+  local name=$1 pid
+  pid=$(current_pid "$name") || return 2  # 多個符合：不啟動、不收編
+  if [ -n "$pid" ]; then echo "${name}：已在執行（pid ${pid}）"; return 0; fi
+  case $name in
+    broker) nohup "$PY" -m mbox.broker >> "$VAR/$name.log" 2>&1 & ;;
+    server) nohup "$PY" server/app.py >> "$VAR/$name.log" 2>&1 & ;;
+    dispatcher) nohup "$PY" -m mbox.dispatcher loop --every 10 >> "$VAR/$name.log" 2>&1 & ;;
+  esac
+  echo $! > "$VAR/$name.pid"
+  echo "${name}：已啟動 pid $!（log: $VAR/$name.log）"
+}
+
+stop_one() {
+  local name=$1 pid i
+  pid=$(current_pid "$name") || return 2  # 多個符合：不自動停，請人工處理
+  if [ -z "$pid" ]; then rm -f "$VAR/$name.pid"; echo "${name}：未執行"; return 0; fi
+  kill -TERM "$pid" 2>/dev/null
+  i=0
+  while pid_matches "$pid" "$name" && [ $i -lt $((STOP_WAIT * 5)) ]; do sleep 0.2; i=$((i + 1)); done
+  if pid_matches "$pid" "$name"; then
+    echo "${name}：TERM 後 ${STOP_WAIT} 秒未退出，送 KILL"
+    kill -KILL "$pid" 2>/dev/null
+    i=0
+    while pid_matches "$pid" "$name" && [ $i -lt $((KILL_WAIT * 5)) ]; do sleep 0.2; i=$((i + 1)); done
+  fi
+  if pid_matches "$pid" "$name"; then echo "${name}：pid $pid 無法停止" >&2; return 1; fi
+  rm -f "$VAR/$name.pid"
+  echo "${name}：已停止（pid ${pid}）"
+}
+
+check_http() {
+  [ "${AAF_UP_NO_HTTP:-0}" = 1 ] && return 0
+  local code=000 i=0
+  while [ $i -lt 30 ]; do   # 最多等 15 秒（慢機器或模擬環境啟動較久）
+    sleep 0.5; i=$((i + 1))
+    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${AAF_SERVER_PORT}/login")
+    [ "$code" = 200 ] && break
+  done
+  echo "AA Forum http://127.0.0.1:${AAF_SERVER_PORT}  HTTP ${code}"
+}
+
+
+# ---------------- supervisor ----------------
+SUP_EVERY="${AAF_SUP_EVERY:-5}"
+SUP_WINDOW="${AAF_SUP_WINDOW:-300}"
+SUP_MAX="${AAF_SUP_MAX:-3}"
+HB_STALE="${AAF_SUP_HB_STALE:-120}"
+
+sup_matches() {  # pid：本使用者、cwd＝ROOT、command 含 "bin/aaf _supervise"
+  local line uid cmd cwd
+  line=$(ps -p "$1" -o uid=,command= 2>/dev/null) || return 1
+  uid=$(echo "$line" | awk '{print $1}')
+  cmd=$(echo "$line" | sed -E 's/^ *[0-9]+ +//')
+  [ "$uid" = "$(id -u)" ] || return 1
+  # 新版：參數帶實例路徑，必須相同。舊版（無參數）：只有 pid 檔指向它才認（呼叫端都從本實例的 pid 檔取 pid）
+  case "$cmd" in *"bin/aaf _supervise $AAF_HOME") ;; *"bin/aaf _supervise") ;; *) return 1 ;; esac
+  cwd=$(proc_cwd "$1")
+  [ "$cwd" = "$ROOT" ]
+}
+
+sup_pid() {
+  local pid
+  [ -f $VAR/supervisor.pid ] || return 0
+  pid=$(tr -cd '0-9' < $VAR/supervisor.pid)
+  if [ -n "$pid" ] && sup_matches "$pid"; then echo "$pid"; else rm -f $VAR/supervisor.pid; fi
+}
+
+alert() {  # key level text：寫入告警佇列 $VAR/alerts/queue.jsonl，由 dispatcher 轉送（服務掛掉時保留，恢復後補發）
+  # 純 shell 產生 JSON（不依賴 python：python 環境壞掉時也要能告警）
+  local esc
+  mkdir -p $VAR/alerts
+  esc() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n\r'; }
+  printf '{"key":"%s","level":"%s","text":"%s","at":%s}\n' "$(esc "$1")" "$(esc "$2")" "$(esc "$3")" "$(date +%s)" \
+    >> $VAR/alerts/queue.jsonl
+  echo "$(date '+%F %T') ALERT[$2] $1 $3" >> $VAR/supervisor.log
+}
+
+proc_age() {  # pid 已執行秒數（ps etime：[[dd-]hh:]mm:ss）
+  ps -p "$1" -o etime= 2>/dev/null | awk '{n=split($1,a,/[-:]/); s=0;
+    if (n==4) s=a[1]*86400+a[2]*3600+a[3]*60+a[4]; else if (n==3) s=a[1]*3600+a[2]*60+a[3]; else s=a[1]*60+a[2];
+    print s}'
+}
+
+hb_stale() {  # pid：dispatcher 已執行超過 HB_STALE 秒，且 heartbeat 超過 HB_STALE 秒沒更新（或根本沒有）
+  local f=$VAR/dispatcher.heartbeat age up
+  up=$(proc_age "$1"); [ -n "$up" ] && [ "$up" -gt "$HB_STALE" ] || return 1
+  [ -f "$f" ] || return 0
+  age=$(( $(date +%s) - $(mtime "$f") ))
+  [ "$age" -gt "$HB_STALE" ]
+}
+
+supervise() {
+  local n now times kept t pid
+  echo "$(date '+%F %T') supervisor 啟動 pid $$（每 ${SUP_EVERY}s；${SUP_WINDOW}s 內重開 ${SUP_MAX} 次即停止）" >> $VAR/supervisor.log
+  rm -f $VAR/supervisor.restarts.* $VAR/supervisor.gaveup.*
+  trap 'echo "$(date "+%F %T") supervisor 停止" >> $VAR/supervisor.log; exit 0' TERM INT
+  while :; do
+    for n in broker server dispatcher; do
+      [ -f "$VAR/supervisor.gaveup.$n" ] && continue
+      pid=$(current_pid "$n" 2>>$VAR/supervisor.log) || continue   # 多個符合：不碰，交人工
+      if [ -n "$pid" ] && [ "$n" = dispatcher ] && hb_stale "$pid"; then
+        echo "$(date '+%F %T') dispatcher heartbeat 逾 ${HB_STALE}s，視為卡死，重開" >> $VAR/supervisor.log
+        stop_one dispatcher >> $VAR/supervisor.log 2>&1
+        rm -f $VAR/dispatcher.heartbeat
+        pid=""
+      fi
+      [ -n "$pid" ] && continue
+      now=$(date +%s)
+      kept=""
+      times=$(cat "$VAR/supervisor.restarts.$n" 2>/dev/null)
+      for t in $times; do [ $((now - t)) -lt "$SUP_WINDOW" ] && kept="$kept $t"; done
+      if [ "$(echo $kept | wc -w | tr -d ' ')" -ge "$SUP_MAX" ]; then
+        alert "service:${n}" problem "服務 ${n} 在 ${SUP_WINDOW} 秒內重開 ${SUP_MAX} 次仍失敗，已停止自動重開。請看 $VAR/${n}.log，修好後執行 bin/aaf restart ${n}。"
+        touch "$VAR/supervisor.gaveup.$n"   # 告警寫完才標記（外部以此判斷時告警必已在佇列）
+        continue
+      fi
+      echo "$kept $now" > "$VAR/supervisor.restarts.$n"
+      echo "$(date '+%F %T') ${n} 不在，重開" >> $VAR/supervisor.log
+      start_one "$n" >> $VAR/supervisor.log 2>&1
+      if [ "$n" = broker ]; then sleep 1; "$PY" -m mbox.dispatcher setup >/dev/null 2>&1; fi
+    done
+    sleep "$SUP_EVERY"
+  done
+}
+
+start_sup() {
+  local pid
+  pid=$(sup_pid)
+  if [ -n "$pid" ]; then echo "supervisor：已在執行（pid ${pid}）"; return 0; fi
+  # 實例路徑放在命令列：supervisor 是 /bin/bash，macOS 不讓 ps 讀 Apple 二進位的環境變數，只能靠參數辨認實例
+  nohup /bin/bash "$ROOT/bin/aaf" _supervise "$AAF_HOME" >> $VAR/supervisor.log 2>&1 &
+  echo $! > $VAR/supervisor.pid
+  echo "supervisor：已啟動 pid $!（log: $VAR/supervisor.log）"
+}
+
+stop_sup() {
+  local pid i=0
+  pid=$(sup_pid)
+  if [ -z "$pid" ]; then echo "supervisor：未執行"; return 0; fi
+  kill -TERM "$pid" 2>/dev/null
+  while sup_matches "$pid" && [ $i -lt 25 ]; do sleep 0.2; i=$((i + 1)); done
+  sup_matches "$pid" && kill -KILL "$pid" 2>/dev/null
+  rm -f $VAR/supervisor.pid
+  echo "supervisor：已停止（pid ${pid}）"
+}
+
+start_all() {
+  local rc=0
+  start_one broker || rc=1
+  sleep 1
+  "$PY" -m mbox.dispatcher setup >/dev/null
+  start_one server || rc=1
+  start_one dispatcher || rc=1
+  return $rc
+}
+
+stop_all() {
+  local rc=0 n
+  for n in dispatcher server broker; do stop_one "$n" || rc=1; done
+  # 常駐 ACP 主機只在 down 時關；restart 保留（角色正在跑的輪次不被打斷，dispatcher 起來後自動接回）
+  if [ "${1:-}" = hosts ]; then
+    "$PY" -c "import drivers.acp as a; a._cli()" || rc=1
+  fi
+  return $rc
+}
+
+usage() { echo "用法：bin/aaf {up|down|restart [broker|server|dispatcher]|status|logs [name] [-n N]|doctor|env|transcript|account|secret|install|init|--version check|set|get <name>}"; }
+
+case "${1:-}" in
+  up)
+    rc=0
+    [ -x "$PY" ] || { echo "還沒安裝：先執行 bin/aaf install" >&2; exit 1; }
+    start_all || rc=1
+    start_sup || rc=1
+    check_http
+    [ "${AAF_UP_NO_HTTP:-0}" = 1 ] || "$PY" server/account_cli.py ensure || true   # 沒有 AA Forum 帳號時引導建立（S1）
+    exit $rc
+    ;;
+  down)
+    rc=0
+    stop_sup || rc=1          # 先停監看，避免剛停的服務被拉回
+    stop_all hosts || rc=1
+    exit $rc
+    ;;
+  restart)
+    if [ -z "${2:-}" ]; then
+      stop_sup; stop_all keep-hosts; start_all; rc=$?; start_sup; check_http; exit $rc
+    fi
+    pattern "$2" >/dev/null || { echo "用法：bin/aaf restart [broker|server|dispatcher]"; exit 2; }
+    rm -f "$VAR/supervisor.gaveup.$2" "$VAR/supervisor.restarts.$2"
+    stop_one "$2" || exit 1
+    start_one "$2" || exit 1
+    if [ "$2" = server ]; then check_http; fi
+    ;;
+  status)
+    rc=0
+    for n in $NAMES; do
+      if ! pid=$(current_pid "$n"); then rc=1; continue; fi
+      if [ -n "$pid" ]; then echo "執行中：${n}（pid ${pid}）"
+      else echo "未執行：${n}"; fi
+      [ -f "$VAR/supervisor.gaveup.$n" ] && echo "  ⚠ supervisor 已停止重開 ${n}（${SUP_WINDOW} 秒內失敗過多）"
+    done
+    pid=$(sup_pid)
+    if [ -n "$pid" ]; then echo "執行中：supervisor（pid ${pid}）"
+    else echo "未執行：supervisor（服務掛掉不會自動重開；執行 bin/aaf up 即可接手現有服務）"; fi
+    "$PY" -m mbox.dispatcher status
+    exit $rc
+    ;;
+  logs)
+    shift
+    lines=20; names=""
+    while [ $# -gt 0 ]; do
+      case $1 in -n) lines=$2; shift 2 ;; *) names="$names $1"; shift ;; esac
+    done
+    [ -z "$names" ] && names="supervisor broker server dispatcher"
+    for n in $names; do
+      [ -f "$VAR/$n.log" ] || { echo "== ${n}：沒有 log"; continue; }
+      echo "== $VAR/$n.log"; tail -n "$lines" "$VAR/$n.log"
+    done
+    ;;
+  doctor)
+    shift
+    exec "$PY" -m mbox.doctor "$@"
+    ;;
+  env)  # 印出生效的實例設定（除錯用；不含機密）
+    echo "AAF_CORE=$ROOT"; echo "AAF_HOME=$AAF_HOME"; echo "MBOX_HOME=$MBOX_HOME"
+    echo "MBOX_PORT=$MBOX_PORT"; echo "AAF_SERVER_PORT=$AAF_SERVER_PORT"
+    echo "AAF_TMUX_PREFIX=${AAF_TMUX_PREFIX:-civ-}"; echo "AAF_TEAM_RULES=${AAF_TEAM_RULES:-}"
+    echo "AAF_HOOKS=${AAF_HOOKS:-$AAF_HOME/hooks}"
+    ;;
+  transcript)
+    shift
+    exec "$PY" server/transcript.py "$@"
+    ;;
+  account)
+    shift
+    exec "$PY" server/account_cli.py "$@"
+    ;;
+  secret)
+    shift
+    exec "$PY" -m mbox.secret_store "$@"
+    ;;
+  _supervise) supervise ;;
+  ""|-h|--help|help) usage; exit 0 ;;
+  *) usage; exit 2 ;;
+esac

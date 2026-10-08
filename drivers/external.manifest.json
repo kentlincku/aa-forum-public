@@ -1,0 +1,7 @@
+{
+ "name": "external",
+ "version": "1.0.0",
+ "contract_version": "1",
+ "capabilities": [],
+ "wake_modes": ["headless"]
+}

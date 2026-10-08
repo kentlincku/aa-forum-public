@@ -1,0 +1,18 @@
+#!/bin/sh
+# 示範 agent（不需任何模型）：讀未讀信，每則回「echo: <內文>」給寄件人並 ack done。
+# 由 command driver 叫醒；mbox、MBOX_* 環境變數由 driver 帶入。
+exec python3 - "$@" <<'PY'
+import json, os, subprocess, sys
+mbox = "mbox"   # command driver 已把公版 bin/ 放進 PATH
+out = subprocess.run([mbox, "inbox", "--json"], capture_output=True, text=True)
+try:
+    msgs = json.loads(out.stdout or "[]")
+except ValueError:
+    print(out.stdout, out.stderr, file=sys.stderr); sys.exit(1)
+for m in msgs:
+    # 群組通知（寄件人 server）只確認不回：回了會被當成私訊貼回群裡，變成噪音
+    if m.get("kind") != "system" and m.get("sender") not in ("server", "mbox-dispatcher"):
+        subprocess.run([mbox, "send", m["sender"], "echo: " + m["body"][:500], "--reply", str(m["id"])], check=False)
+    subprocess.run([mbox, "ack", str(m["id"]), "done"], check=False)
+print(f"echo 處理 {len(msgs)} 則")
+PY

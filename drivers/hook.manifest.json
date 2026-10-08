@@ -1,0 +1,13 @@
+{
+ "name": "hook",
+ "version": "2.0.0",
+ "contract_version": "1",
+ "capabilities": [
+  "interactive_room",
+  "hook_wake"
+ ],
+ "wake_modes": [
+  "hook",
+  "tmux"
+ ]
+}

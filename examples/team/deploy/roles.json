@@ -1,0 +1,45 @@
+{
+ "_說明": "Five-role example team. Copy deploy/roles.json and skills/ into an instance (see README.md). Edit driver/acp_agent/model per role.",
+ "roles": {
+  "me": {
+   "runtime": "human",
+   "rank": "human",
+   "driver": "manual"
+  },
+  "lead": {
+   "rank": "lead",
+   "label": "Lead",
+   "driver": "acp",
+   "acp_agent": "codex",
+   "persona_file": "skills/lead/SKILL.md"
+  },
+  "builder": {
+   "rank": "worker",
+   "label": "Builder",
+   "driver": "acp",
+   "acp_agent": "pi",
+   "persona_file": "skills/builder/SKILL.md"
+  },
+  "reviewer": {
+   "rank": "worker",
+   "label": "Reviewer",
+   "driver": "acp",
+   "acp_agent": "pi",
+   "persona_file": "skills/reviewer/SKILL.md"
+  },
+  "debugger": {
+   "rank": "worker",
+   "label": "Debugger",
+   "driver": "acp",
+   "acp_agent": "pi",
+   "persona_file": "skills/debugger/SKILL.md"
+  },
+  "guardian": {
+   "rank": "worker",
+   "label": "Guardian",
+   "driver": "acp",
+   "acp_agent": "codex",
+   "persona_file": "skills/guardian/SKILL.md"
+  }
+ }
+}

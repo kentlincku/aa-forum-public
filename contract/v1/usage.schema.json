@@ -1,0 +1,107 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "aa-forum/contract/v1/usage",
+ "title": "Usage",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "contract_version",
+  "source"
+ ],
+ "properties": {
+  "contract_version": {
+   "const": "1"
+  },
+  "model": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "provider": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "context_used": {
+   "type": [
+    "integer",
+    "null"
+   ],
+   "minimum": 0
+  },
+  "context_limit": {
+   "type": [
+    "integer",
+    "null"
+   ],
+   "minimum": 0
+  },
+  "tokens": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "input": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "output": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "cache_read": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "cache_write": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "reasoning": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    }
+   }
+  },
+  "source": {
+   "type": "string",
+   "description": "資料來源說明，例：turn_result、hermes state.db、override"
+  },
+  "percent": {
+   "type": [
+    "integer",
+    "null"
+   ],
+   "minimum": 0,
+   "maximum": 100,
+   "description": "context 已用百分比（v1 增補選填）"
+  },
+  "measured_at": {
+   "type": [
+    "number",
+    "null"
+   ],
+   "description": "量測時間 epoch（v1 增補選填）"
+  },
+  "reason": {
+   "type": "string",
+   "description": "取不到用量時的原因（v1 增補選填）"
+  }
+ }
+}

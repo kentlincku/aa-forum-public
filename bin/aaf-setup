@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# aaf 安裝與初始化（SPEC-1.0 §1）。由 bin/aaf install|init 呼叫，也可直接執行。
+#   install            檢查前置條件 → 建 .venv → 裝 Python 相依 → （有 node）裝 ACP 轉接器 → 自我測試
+#   init <路徑> [--blank|--example=team]  建新實例（預設 demo：一位使用者＋echo；team：再加 5 個示範角色，先用 echo 頂著）
+# 冪等：install 可重跑；init 目標非空就拒絕。macOS 與 Linux 皆可。
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
+say() { printf '%s\n' "$*"; }
+warn() { printf '⚠ %s\n' "$*" >&2; }
+die() { printf '✗ %s\n' "$*" >&2; exit 1; }
+
+find_python() {
+  local c v
+  for c in "${AAF_PYTHON:-}" python3.13 python3.12 python3.11 python3.10 python3; do
+    [ -n "$c" ] || continue
+    command -v "$c" >/dev/null 2>&1 || continue
+    v=$("$c" -c 'import sys;print("%d%02d"%sys.version_info[:2])' 2>/dev/null) || continue
+    [ "$v" -ge 310 ] && { command -v "$c"; return 0; }
+  done
+  return 1
+}
+
+install_hint() {
+  case "$(uname -s)" in
+    Darwin) say "  brew install python@3.12   （或 https://www.python.org/downloads/）" ;;
+    Linux)  say "  Debian/Ubuntu：sudo apt-get install -y python3 python3-venv python3-pip" ;;
+  esac
+}
+
+do_install() {
+  say "== 前置條件（$(uname -s) $(uname -m)）"
+  PYB=$(find_python) || { say "✗ 需要 Python ≥ 3.10"; install_hint; exit 1; }
+  say "✓ Python：${PYB}（$("$PYB" -V 2>&1)）"
+  command -v uv >/dev/null 2>&1 && say "✓ uv：$(command -v uv)" || say "· uv：沒有（改用 venv＋pip）"
+  command -v sqlite3 >/dev/null 2>&1 && say "✓ sqlite3" || warn "sqlite3 CLI 沒有：doctor／驗收部分功能受限"
+  command -v tmux >/dev/null 2>&1 && say "✓ tmux" || say "· tmux：沒有（只有 driver=tmux 的角色需要）"
+  local NODE_OK=0
+  if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+    nv=$(node -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0)
+    [ "$nv" -ge 18 ] && NODE_OK=1 && say "✓ node $(node -v)" || warn "node 版本 < 18：略過 ACP 轉接器"
+  else
+    say "· node／npm：沒有（Claude／Codex 角色需要；Hermes／pi／command 角色不需要）"
+  fi
+
+  say "== Python 環境（$ROOT/.venv）"
+  if [ ! -x "$ROOT/.venv/bin/python" ]; then
+    if command -v uv >/dev/null 2>&1; then uv venv -q -p "$PYB" "$ROOT/.venv" || die "uv venv 失敗"
+    else "$PYB" -m venv "$ROOT/.venv" || die "python -m venv 失敗（Debian/Ubuntu 請裝 python3-venv）"; fi
+  fi
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install -q -p "$ROOT/.venv/bin/python" -r "$ROOT/server/requirements.txt" pytest || die "相依安裝失敗"
+  else
+    "$ROOT/.venv/bin/python" -m pip install -q --upgrade pip >/dev/null 2>&1
+    "$ROOT/.venv/bin/python" -m pip install -q -r "$ROOT/server/requirements.txt" pytest || die "相依安裝失敗"
+  fi
+  say "✓ 相依已安裝"
+
+  if [ "$NODE_OK" = 1 ]; then
+    say "== ACP 轉接器（vendor/acp）"
+    (cd "$ROOT/vendor/acp" && npm ci --silent --no-audit --no-fund) && say "✓ claude-agent-acp、codex-acp" || warn "npm ci 失敗：Claude／Codex 角色無法使用"
+  fi
+
+  say "== 自我測試"
+  "$ROOT/.venv/bin/python" -c 'import fastapi, uvicorn, PIL, jsonschema; import sys; sys.path.insert(0, "'"$ROOT"'"); import mbox.core, drivers' \
+    && say "✓ 模組載入正常" || die "模組載入失敗"
+  say ""
+  say "完成。下一步："
+  say "  bin/aaf init ~/my-team          # 建一個實例（demo：使用者＋echo 角色）"
+  say "  AAF_HOME=~/my-team bin/aaf up"
+}
+
+free_port() {  # 從 $1 起找一個沒被占用的 port
+  local p=$1
+  while [ "$p" -lt $(( $1 + 200 )) ]; do
+    if ! (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then echo "$p"; return 0; fi
+    exec 3>&- 2>/dev/null; p=$((p + 1))
+  done
+  echo "$1"
+}
+
+do_init() {
+  local dest="" blank=0 example="" user="${USER:-me}"
+  for a in "$@"; do case "$a" in --blank) blank=1 ;; --example=*) example="${a#--example=}" ;; --user=*) user="${a#--user=}" ;; *) dest="$a" ;; esac; done
+  [ -n "$dest" ] || die "用法：aaf init <路徑> [--blank|--example=team] [--user=<使用者 id>]"
+  echo "$user" | grep -Eq '^[A-Za-z][A-Za-z0-9_.-]{1,31}$' || die "使用者 id「${user}」不合格式（字母開頭，英數 _ . -，2–32 字）；用 --user= 指定"
+  case "$example" in ''|team) ;; *) die "未知範例「${example}」（目前只有 team）" ;; esac
+  [ "$blank" = 1 ] && [ -n "$example" ] && die "--blank 與 --example 不能同時用"
+  if [ -e "$dest" ] && [ -n "$(ls -A "$dest" 2>/dev/null)" ]; then die "${dest} 不是空目錄，拒絕覆寫"; fi
+  mkdir -p "$dest"/{deploy,skills,rules,hooks,bin} || die "無法建立 ${dest}"
+  dest="$(cd "$dest" && pwd -P)"
+  local mp zp
+  mp=$(free_port 8775); zp=$(free_port 8111)
+  cat > "$dest/.aaf.env" <<EOF
+# 實例設定（bin/aaf 啟動時載入；只接受 KEY=VALUE）
+MBOX_PORT=$mp
+AAF_SERVER_PORT=$zp
+AAF_TMUX_PREFIX=civ-$(basename "$dest" | tr -cd 'A-Za-z0-9' | cut -c1-8)-
+# AAF_TEAM_RULES=rules/team.md
+# AAF_TZ=Asia/Taipei
+# AAF_TRANSCRIPT_MINUTES=120
+# AAF_CHAT_FILE_MB=100
+# AAF_UPLOAD_MB=1024
+EOF
+  printf 'var/\nwork/\noutputs/\n__pycache__/\n*.pyc\n' > "$dest/.gitignore"
+  if [ "$blank" = 1 ]; then
+    printf '{\n "roles": {\n  "%s": {"runtime": "human", "rank": "human", "driver": "manual"}\n },\n "auth": {"secrets": [], "ssh": []}\n}\n' "$user" > "$dest/deploy/roles.json"
+  else
+    cp "$ROOT/examples/demo/bin/echo-agent" "$dest/bin/echo-agent"
+    mkdir -p "$dest/skills/demo-echo"
+    cp "$ROOT/examples/demo/skills/demo-echo/SKILL.md" "$dest/skills/demo-echo/SKILL.md"
+    "$ROOT/.venv/bin/python" - "$ROOT/examples/demo/deploy/roles.json" "$dest/deploy/roles.json" "$user" <<'PY'
+import json, sys
+src, dst, user = sys.argv[1:]
+d = json.load(open(src))
+roles = {user: d["roles"].pop("me")}
+roles.update(d["roles"])
+d["roles"] = roles
+d.pop("_說明", None)
+json.dump(d, open(dst, "w"), ensure_ascii=False, indent=1)
+open(dst, "a").write("\n")
+PY
+    if [ "$example" = team ]; then
+      cp -R "$ROOT/examples/team/skills/." "$dest/skills/"
+      "$ROOT/.venv/bin/python" - "$ROOT/examples/team/deploy/roles.json" "$dest/deploy/roles.json" <<'PY'
+import json, sys
+src, dst = sys.argv[1:]
+team = json.load(open(src))["roles"]
+d = json.load(open(dst))
+for rid, cfg in team.items():
+    if cfg.get("rank") == "human":
+        continue
+    # 先用不需模型的 echo 頂著；之後在 Agents 頁「換 agent／模型」換成真的（記在 suggested_agent）
+    cfg = dict(cfg, suggested_agent=cfg.pop("acp_agent", None), runtime="command", driver="command",
+               command="{instance}/bin/echo-agent {role}")
+    d["roles"][rid] = cfg
+json.dump(d, open(dst, "w"), ensure_ascii=False, indent=1)
+open(dst, "a").write("\n")
+PY
+    fi
+  fi
+  cat > "$dest/README.md" <<EOF
+# $(basename "$dest") — AA Forum 實例
+
+公版：$ROOT
+啟動：AAF_HOME=$dest $ROOT/bin/aaf up
+AA Forum：http://127.0.0.1:$zp     broker：127.0.0.1:$mp
+
+角色在 deploy/roles.json；人設放 skills/<名>/SKILL.md；檢查規則放 hooks/。
+EOF
+  (cd "$dest" && git init -q 2>/dev/null && git add -A && git -c user.name=aaf -c user.email=aaf@localhost commit -qm "init AA Forum instance" 2>/dev/null) || true
+  say "✓ 實例已建立：${dest}（使用者 ${user}，AA Forum :${zp}，broker :${mp}）"
+  say "下一步：AAF_HOME=$dest $ROOT/bin/aaf up"
+}
+
+case "${1:-}" in
+  install) shift; do_install "$@" ;;
+  init) shift; do_init "$@" ;;
+  *) say "用法：$0 install | init <路徑> [--blank|--example=team] [--user=<id>]"; exit 2 ;;
+esac

@@ -1,0 +1,118 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "aa-forum/contract/v1/turn_result",
+ "title": "TurnResult",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "contract_version",
+  "role",
+  "driver",
+  "exit",
+  "ok"
+ ],
+ "properties": {
+  "contract_version": {
+   "const": "1"
+  },
+  "role": {
+   "type": "string"
+  },
+  "driver": {
+   "type": "string"
+  },
+  "exit": {
+   "type": [
+    "integer",
+    "null"
+   ]
+  },
+  "ok": {
+   "type": "boolean"
+  },
+  "session_id": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "text": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "error": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "model_used": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "tokens": {
+   "type": "object",
+   "additionalProperties": false,
+   "properties": {
+    "input": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "output": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "cache_read": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "cache_write": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    },
+    "reasoning": {
+     "type": [
+      "integer",
+      "null"
+     ],
+     "minimum": 0
+    }
+   }
+  },
+  "duration_ms": {
+   "type": [
+    "integer",
+    "null"
+   ],
+   "minimum": 0
+  },
+  "started_at": {
+   "type": [
+    "number",
+    "null"
+   ]
+  },
+  "finished_at": {
+   "type": [
+    "number",
+    "null"
+   ]
+  }
+ }
+}

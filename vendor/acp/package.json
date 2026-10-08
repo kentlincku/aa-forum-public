@@ -1,0 +1,10 @@
+{
+  "name": "aaf-acp-adapters",
+  "private": true,
+  "description": "v2 ACP driver 用的轉接器，固定版本，裝在 repo 內（不動全域）",
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.86.0",
+    "@zed-industries/codex-acp": "0.16.0",
+    "pi-acp": "0.0.34"
+  }
+}

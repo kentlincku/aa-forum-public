@@ -1,0 +1,6 @@
+#!/bin/sh
+# mbox CLI 入口（任何 agent 都能用；只需 python3）。實例由 AAF_HOME（＋.aaf.env）決定。
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+. "$ROOT/bin/_instance_env.sh"
+PY="$ROOT/.venv/bin/python"; [ -x "$PY" ] || PY=python3
+exec "$PY" "$ROOT/mbox/cli.py" "$@"

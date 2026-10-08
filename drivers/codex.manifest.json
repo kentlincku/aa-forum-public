@@ -1,0 +1,20 @@
+{
+ "name": "codex",
+ "version": "2.0.0",
+ "contract_version": "1",
+ "capabilities": [
+  "resume_session",
+  "model_select",
+  "tool_restrict",
+  "interactive_room",
+  "hook_wake",
+  "account_quota"
+ ],
+ "wake_modes": [
+  "headless",
+  "hook",
+  "tmux",
+  "manual"
+ ],
+ "bin": "codex"
+}

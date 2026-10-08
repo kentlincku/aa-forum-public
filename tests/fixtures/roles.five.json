@@ -1,0 +1,52 @@
+{
+ "_說明": "測試用五角色名單（固定，不隨部署的 deploy/roles.json 變動）",
+ "roles": {
+  "owner": {
+   "runtime": "human",
+   "rank": "human",
+   "driver": "manual"
+  },
+  "lead": {
+   "runtime": "acp-hermes",
+   "rank": "lead",
+   "persona_file": "skills/lead/SKILL.md",
+   "driver": "acp",
+   "acp_agent": "hermes",
+   "label": "組長"
+  },
+  "builder": {
+   "runtime": "acp-hermes",
+   "rank": "worker",
+   "persona_file": "skills/builder/SKILL.md",
+   "driver": "acp",
+   "acp_agent": "hermes",
+   "label": "建置",
+   "model": "copilot:gpt-6-astra"
+  },
+  "reviewer": {
+   "runtime": "acp-hermes",
+   "rank": "worker",
+   "persona_file": "skills/reviewer/SKILL.md",
+   "driver": "acp",
+   "acp_agent": "hermes",
+   "label": "審查"
+  },
+  "debugger": {
+   "runtime": "acp-hermes",
+   "rank": "worker",
+   "persona_file": "skills/debugger/SKILL.md",
+   "driver": "acp",
+   "acp_agent": "hermes",
+   "label": "除錯",
+   "toolsets": "terminal,file,web"
+  },
+  "guardian": {
+   "runtime": "acp-hermes",
+   "rank": "worker",
+   "persona_file": "skills/guardian/SKILL.md",
+   "driver": "acp",
+   "acp_agent": "hermes",
+   "label": "守門"
+  }
+ }
+}

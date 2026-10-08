@@ -1,0 +1,17 @@
+{
+ "name": "pi",
+ "version": "2.0.0",
+ "contract_version": "1",
+ "capabilities": [
+  "resume_session",
+  "model_select",
+  "provider_select",
+  "interactive_room"
+ ],
+ "wake_modes": [
+  "headless",
+  "tmux",
+  "manual"
+ ],
+ "bin": "pi"
+}

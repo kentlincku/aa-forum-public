@@ -1,0 +1,68 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "aa-forum/contract/v1/wake_request",
+ "title": "WakeRequest",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "contract_version",
+  "role",
+  "prompt",
+  "cwd"
+ ],
+ "properties": {
+  "contract_version": {
+   "const": "1"
+  },
+  "role": {
+   "type": "string",
+   "pattern": "^[a-z0-9_-]{1,32}$"
+  },
+  "prompt": {
+   "type": "string"
+  },
+  "system_prompt": {
+   "type": "string"
+  },
+  "session_id": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "model": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "provider": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "cwd": {
+   "type": "string"
+  },
+  "env": {
+   "type": "object",
+   "additionalProperties": {
+    "type": "string"
+   }
+  },
+  "timeout_s": {
+   "type": [
+    "number",
+    "null"
+   ],
+   "exclusiveMinimum": 0
+  },
+  "message_ids": {
+   "type": "array",
+   "items": {
+    "type": "integer"
+   }
+  }
+ }
+}
